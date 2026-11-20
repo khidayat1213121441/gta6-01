@@ -65,7 +65,6 @@ export function populateTraffic(state, rng) {
 }
 
 function pickPedTarget(ped, rng) {
-  // Walk along the nearest road's sidewalk, in a random direction.
   const ix = Math.round((ped.x - 24) / pitch);
   const iz = Math.round((ped.z - 24) / pitch);
   const cx = roadCenter(Math.max(0, Math.min(39, ix)));
@@ -115,7 +114,6 @@ export function updateTraffic(state, dt) {
         const targetAngle = onV
           ? (turn > 0 ? Math.PI / 2 : -Math.PI / 2)
           : (turn > 0 ? Math.PI : 0);
-        // Snap the car onto the new road centreline.
         if (onV) car.z = nearest;
         else car.x = nearest;
         car.angle = targetAngle;
@@ -124,7 +122,6 @@ export function updateTraffic(state, dt) {
     }
     const steer = 0;
     driveCar(state, car, throttle, steer, dt);
-    // Keep traffic on its road: gentle pull back to the lane.
     const center = roadCenter(Math.round(((onV ? car.x : car.z) - 24) / pitch));
     const offset = (onV ? car.x : car.z) - center;
     const lane = car.dir > 0 ? -11 : 11;
@@ -141,8 +138,6 @@ export function updateTraffic(state, dt) {
       ped.deadTimer -= dt;
       continue;
     }
-    // Foot cops are driven by police.js, not the pedestrian AI: the walker
-    // logic would drag them toward random sidewalk targets mid-chase and
     // they would never close in to arrest.
     if (ped.kind === 'cop') continue;
     alive += 1;
@@ -175,7 +170,6 @@ export function updateTraffic(state, dt) {
     ped.x = resolved.x;
     ped.z = resolved.z;
   }
-  // Top up pedestrians near the player so the streets stay alive.
   if (alive < PEDS.count && rng() < 0.05) {
     spawnPed(state, rng, player.x, player.z);
   }

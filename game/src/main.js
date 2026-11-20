@@ -13,15 +13,19 @@ import { createCity, roadCenter } from './world.js';
 import { createPlayer, tryEnterCar, updatePlayer } from './player.js';
 import { populateTraffic, updateTraffic } from './traffic.js';
 import { addHeat, createWanted, updatePolice } from './police.js';
-import { fireBullet, spawnParticles, tryPunch, updateBullets, updateParticles } from './combat.js';
+import { fireBullet, maybeDriftDust, spawnParticles, tryPunch, updateBullets, updateParticles } from './combat.js';
 import { createMissionState, currentMission, missionObjectiveText, startMission, updateMissions } from './missions.js';
 import { updateActivities } from './activities.js';
 import { createRenderer } from './render.js';
 import { createCameraRig } from './camera.js';
 import { createHud } from './hud.js';
 import { createAudio } from './audio.js';
-import { ACTION_CONFIRM, ACTION_ENTER, ACTION_PAUSE, ACTION_PUNCH, ACTION_SHOOT, createInput } from './input.js';
+import { ACTION_CONFIRM, ACTION_ENTER, ACTION_PAUSE, ACTION_PUNCH, ACTION_RADIO, ACTION_SHOOT, ACTION_SHOP_1, ACTION_SHOP_2, ACTION_SHOP_3, ACTION_SHOP_4, ACTION_SHOP_5, ACTION_SHOP_6, ACTION_WEAPON, createInput } from './input.js';
 import { applySave, loadSave, saveGame } from './save.js';
+import { buyShopItem, buyWeapon, nearShop } from './shop.js';
+import { cycleWeapon, selectWeapon } from './combat.js';
+import { createHelicopter } from './helicopter.js';
+import { createRace } from './activities.js';
 import { stageShot } from './shots.js';
 
 const MAX_FRAME = 0.25;
@@ -45,13 +49,15 @@ const state = {
   seed,
   rng,
   city,
-  // Spawn on the road beside the garage, never inside a building.
   player: createPlayer(roadCenter(20), garage.z),
   cars: [],
   peds: [],
   bullets: [],
   particles: [],
   wanted: createWanted(),
+  heli: createHelicopter(),
+  race: createRace(),
+  roadblocks: [],
   mission: createMissionState(),
   taxi: { active: false, hasPassenger: false, px: 0, pz: 0, dx: 0, dz: 0, fare: 0, fareTimer: 0 },
   clock: CLOCK.startSeconds,
@@ -62,6 +68,7 @@ const state = {
   screen: 'title',
   inputRunning: false,
   saveTimer: 0,
+  dustTimer: 0,
   missionTitle: '',
   missionObjective: '',
 };
@@ -104,6 +111,8 @@ function respawn(reason) {
   state.wanted.heat = 0;
   state.wanted.unseen = 0;
   state.cars = state.cars.filter((c) => c.kind !== 'police');
+  state.roadblocks = [];
+  state.heli = createHelicopter();
   state.peds = state.peds.filter((p) => p.kind !== 'cop');
   const fine = reason === 'busted' ? 200 : 150;
   player.cash = Math.max(0, player.cash - fine);
@@ -117,14 +126,25 @@ function processEvents() {
     if (event.type === 'message') {
       hud.showToast(event.text);
     } else if (event.type === 'mission-start') {
-      hud.showBrief(event.title, event.brief);
+      hud.showBrief(event.title, event.brief, event.face);
       refreshMissionText();
     } else if (event.type === 'mission-complete') {
       hud.showToast(`${event.title} complete — +$${event.reward}`);
       audio.cash();
       audio.missionComplete();
+      spawnParticles(state, state.player.x, state.player.z, 36, 0xffd23f);
+      rig.shake(3);
       saveGame(state);
       refreshMissionText();
+    } else if (event.type === 'ram') {
+      rig.shake(6);
+      spawnParticles(state, event.x, event.z, 8, 0x888888);
+    } else if (event.type === 'shop-bought') {
+      hud.showToast(event.text);
+      audio.cash();
+      saveGame(state);
+    } else if (event.type === 'shop-denied') {
+      hud.showToast(event.text);
     } else if (event.type === 'package') {
       hud.showToast(`Hidden package found — +$${event.reward}`);
       audio.pickup();
@@ -145,6 +165,7 @@ function processEvents() {
     } else if (event.type === 'car-wrecked') {
       hud.showToast('Car wrecked!');
       audio.crash();
+      rig.shake(10);
       if (event.x !== undefined) spawnParticles(state, event.x, event.z, 22, 0x888888);
     } else if (event.type === 'shot') {
       audio.shot();
@@ -178,17 +199,32 @@ const hud = createHud({
     state.screen = 'play';
     hud.showScreen('none');
   },
+  onShop(id) {
+    buyShopItem(state, id);
+  },
+  onWeaponBuy(id) {
+    buyWeapon(state, id);
+  },
+  onWeapon(id) {
+    selectWeapon(state, id);
+  },
 });
 
 function startGame(fromSave) {
   const player = state.player;
   player.health = 100;
+  player.armor = 0;
   player.cash = 0;
+  player.respect = 0;
+  player.weapons = { owned: ['fists', 'pistol'], current: 'pistol' };
   player.inCar = null;
   player.x = roadCenter(20);
   player.z = garage.z;
   player.angle = 0;
   state.wanted = createWanted();
+  state.heli = createHelicopter();
+  state.race = createRace();
+  state.roadblocks = [];
   state.mission = createMissionState();
   state.stats = { packages: 0, fares: 0 };
   state.taxi = { active: false, hasPassenger: false, px: 0, pz: 0, dx: 0, dz: 0, fare: 0, fareTimer: 0 };
@@ -213,7 +249,20 @@ function step(dt, actions) {
   state.inputRunning = input.running();
   const aim = worldAimAngle();
   const crash = updatePlayer(state, move, aim, dt);
-  if (crash === 'crash') audio.crash();
+  if (crash === 'crash') { audio.crash(); rig.shake(4); }
+  maybeDriftDust(state, move, dt);
+  const shopping = nearShop(state);
+  if (actions & ACTION_SHOP_1) { if (shopping) buyShopItem(state, 'repair'); else selectWeapon(state, 'fists'); }
+  if (actions & ACTION_SHOP_2) { if (shopping) buyShopItem(state, 'health'); else selectWeapon(state, 'pistol'); }
+  if (actions & ACTION_SHOP_3) { if (shopping) buyShopItem(state, 'armor'); else selectWeapon(state, 'smg'); }
+  if (actions & ACTION_SHOP_4) { if (shopping) buyShopItem(state, 'bribe'); else selectWeapon(state, 'shotgun'); }
+  if (actions & ACTION_SHOP_5) buyWeapon(state, 'smg');
+  if (actions & ACTION_SHOP_6) buyWeapon(state, 'shotgun');
+  if (actions & ACTION_WEAPON) cycleWeapon(state);
+  if (actions & ACTION_RADIO) {
+    const name = audio.nextStation();
+    hud.showToast(`Radio — ${name}.`);
+  }
   if (actions & ACTION_ENTER) {
     const entered = tryEnterCar(state);
     if (entered) {
@@ -229,7 +278,6 @@ function step(dt, actions) {
   }
   if (actions & (ACTION_PUNCH | ACTION_CONFIRM) && state.screen === 'play') {
     if (tryPunch(state)) {
-      // Hit landed; sound + particles come through events.
     }
   }
   if ((actions & ACTION_SHOOT) && state.screen === 'play') {
@@ -273,6 +321,8 @@ function step(dt, actions) {
   const speed01 = player.inCar ? Math.abs(player.inCar.speed) / 460 : 0;
   audio.engine(speed01, !!player.inCar && state.screen === 'play');
   audio.siren(state.wanted.stars > 0 && state.screen === 'play', dt);
+  audio.radioTick();
+  state.radioLine = audio.radioLine();
 
   processEvents();
   refreshMissionText();
@@ -282,6 +332,7 @@ function runShot(name) {
   window.__shotMode = true;
   const staged = stageShot(name, state);
   state.screen = staged.screen;
+  state.radioLine = audio.radioLine();
   refreshMissionText();
   if (staged.screen === 'title') {
     hud.setContinueVisible(!!loadSave());
@@ -292,8 +343,10 @@ function runShot(name) {
   }
   rig.setMode(!!state.player.inCar, true);
   rig.snap(state.player);
-  // Keep rendering every frame (a stopped rAF loop leaves the WebGL canvas
-  // uncomposited in headless screenshots); flag readiness after 2 paints.
+  // Settle the look-ahead only: snap() looks at the player (pitched
+  // down), while live play looks up the road. A shot must show the live
+  // framing — road, city and sky — from the snapped position.
+  rig.settleLook(state.player);
   let painted = 0;
   function paint() {
     requestAnimationFrame(paint);
@@ -336,7 +389,6 @@ function runGame() {
     }
 
     if (state.screen === 'title') {
-      // Slow cinematic orbit over downtown behind the title screen.
       titleAngle += dtReal * 0.045;
       const tower = city.landmarks.tower;
       const cam = renderer.camera;
