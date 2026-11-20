@@ -91,7 +91,6 @@ export function createCity(rng) {
     }
   }
 
-  // Landmarks: fixed blocks so missions and screenshots always find them.
   function landmark(bx, bz, label) {
     return { x: blockOrigin(bx) + block / 2, z: blockOrigin(bz) + block / 2, label };
   }
@@ -105,7 +104,6 @@ export function createCity(rng) {
     marina: landmark(34, 24, 'Marina Pier'),
   };
 
-  // 10 hidden packages on sidewalks, near roads, spread across the city.
   const used = new Set();
   while (packages.length < 10) {
     const bx = randomInt(rng, 1, 38);

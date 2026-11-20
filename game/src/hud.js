@@ -4,8 +4,69 @@
 // Energetic pops for game feedback (ease-out-back, 150–300ms), Premium
 // slides for menus (power3.out, 400–600ms), staggered entrances under
 // 500ms total, never opacity-only, never linear.
-import { CITY, MOTION } from './config.js';
-import { districtAt } from './world.js';
+import { CITY, MOTION, RESPECT_RANKS } from './config.js';
+import { distance, districtAt, districtAtPoint } from './world.js';
+import { SHOP_ITEMS, WEAPON_ITEMS, canBuy, canBuyWeapon, nearShop } from './shop.js';
+import { WEAPONS, currentWeapon, ensureWeapons } from './combat.js';
+import { dispatchUnits } from './police.js';
+import { rankForRespect } from './missions.js';
+
+const DISTRICT_NAMES = {
+  downtown: 'DOWNTOWN', marina: 'MARINA', barrio: 'EL BARRIO', industrial: 'INDUSTRIAL',
+  park: 'SOLMAR PARK', residential: 'RESIDENTIAL', beach: 'MARINA BEACH', sea: 'SOLMAR BAY',
+};
+
+function districtName(state) {
+  const marina = state.city.landmarks.marina;
+  if (distance(state.player.x, state.player.z, marina.x, marina.z) < 400) return 'MARINA';
+  return DISTRICT_NAMES[districtAtPoint(state.player.x, state.player.z)] || 'SOLMAR CITY';
+}
+
+/** Procedurally draw a job-giver portrait (canvas, no assets). */
+function drawPortrait(canvas, face) {
+  const c = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  c.clearRect(0, 0, w, h);
+  c.fillStyle = '#2a1e3a';
+  c.fillRect(0, 0, w, h);
+  c.fillStyle = '#ffd23f';
+  c.fillRect(0, h - 6, w, 6);
+  // Shoulders / jacket.
+  c.fillStyle = face.jacket || '#3a5a3a';
+  c.beginPath();
+  c.moveTo(6, h);
+  c.quadraticCurveTo(w / 2, h - 34, w - 6, h);
+  c.closePath();
+  c.fill();
+  // Head.
+  c.fillStyle = face.skin || '#c98d5f';
+  c.beginPath();
+  c.arc(w / 2, h / 2 - 4, 20, 0, Math.PI * 2);
+  c.fill();
+  // Hair or hat.
+  if (face.hat) {
+    c.fillStyle = '#14100a';
+    c.fillRect(w / 2 - 24, h / 2 - 26, 48, 8);
+    c.beginPath();
+    c.arc(w / 2, h / 2 - 24, 15, Math.PI, 0);
+    c.fill();
+  } else {
+    c.fillStyle = face.hair || '#1a1a1a';
+    c.beginPath();
+    c.arc(w / 2, h / 2 - 8, 20, Math.PI * 1.05, Math.PI * 1.95);
+    c.fill();
+  }
+  // Eyes + smile.
+  c.fillStyle = '#14100a';
+  c.beginPath(); c.arc(w / 2 - 8, h / 2 - 2, 2.4, 0, Math.PI * 2); c.fill();
+  c.beginPath(); c.arc(w / 2 + 8, h / 2 - 2, 2.4, 0, Math.PI * 2); c.fill();
+  c.strokeStyle = '#5a2a1a';
+  c.lineWidth = 2;
+  c.beginPath();
+  c.arc(w / 2, h / 2 + 6, 7, 0.15 * Math.PI, 0.85 * Math.PI);
+  c.stroke();
+}
 
 const { size } = CITY;
 
@@ -40,20 +101,49 @@ export function createHud(callbacks) {
     #hud .top-right { position: absolute; top: 14px; right: 14px; text-align: right; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
     #hud .stars { font-size: 26px; letter-spacing: 3px; line-height: 1; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
     #hud .stars .on { color: #ffd23f; } #hud .stars .off { color: rgba(255,255,255,0.25); }
+    #hud .respect { font-size: 13px; font-weight: 800; letter-spacing: 1px; color: #ffd23f; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
+    #hud .respect-bar { width: 190px; height: 6px; background: rgba(0,0,0,0.55); border-radius: 3px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); }
+    #hud .respect-fill { height: 100%; background: #ffd23f; width: 0%; }
+    #hud .dispatch { position: absolute; top: 240px; left: 14px; padding: 10px 12px; min-width: 230px; }
+    #hud .dispatch .dispatch-title { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #ff8a7a; margin-bottom: 5px; }
+    #hud .dispatch .unit { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; font-weight: 700; line-height: 1.7; }
+    #hud .dispatch .unit .role { color: #ffd23f; }
+    #hud .dispatch .unit .dist { color: #c9c4b4; font-weight: 600; }
+    #hud .weapons { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 6px; pointer-events: auto; }
+    #hud .slot { width: 74px; padding: 6px 4px; text-align: center; border-radius: 8px; background: rgba(12,16,24,0.72); border: 1px solid rgba(255,255,255,0.14); cursor: pointer; }
+    #hud .slot .key { font-size: 11px; font-weight: 800; color: #ffd23f; }
+    #hud .slot .wname { font-size: 12px; font-weight: 800; letter-spacing: 0.5px; }
+    #hud .slot.current { border-color: #ffd23f; background: rgba(255,210,63,0.18); }
+    #hud .slot.locked { opacity: 0.45; cursor: default; }
+    #hud .slot.locked .wname { color: #c9c4b4; }
     #hud .cash { font-size: 22px; font-weight: 800; color: #7ee081; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
     #hud .health-bar { width: 190px; height: 12px; background: rgba(0,0,0,0.55); border-radius: 6px; overflow: hidden; border: 1px solid rgba(255,255,255,0.2); }
     #hud .health-fill { height: 100%; background: #58d158; width: 100%; }
+    #hud .armor { font-size: 13px; font-weight: 700; color: #8ecbff; text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
+    #hud .vignette { position: absolute; inset: 0; pointer-events: none; background: radial-gradient(ellipse at center, transparent 55%, rgba(200,20,20,0.55) 100%); opacity: 0; }
+    #hud .shop { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%); padding: 10px 14px; text-align: center; pointer-events: auto; }
+    #hud .shop .shop-title { font-size: 14px; font-weight: 800; letter-spacing: 1px; color: #ffd23f; margin-bottom: 6px; }
+    #hud .shop .shop-row { display: flex; gap: 6px; }
+    #hud .shop .shop-row + .shop-row { margin-top: 6px; }
+    #hud .shop button { font-size: 13px; padding: 8px 10px; margin: 0; white-space: nowrap; }
+    #hud .shop button:disabled { opacity: 0.38; cursor: default; }
     #hud .objective { position: absolute; left: 14px; bottom: 14px; padding: 12px 16px; max-width: 430px; }
     #hud .objective .mission-title { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: #ffd23f; }
     #hud .objective .mission-text { font-size: 15px; margin-top: 3px; line-height: 1.35; }
     #hud .bottom-right { position: absolute; right: 14px; bottom: 14px; text-align: right; }
+    #hud .district { font-size: 13px; font-weight: 800; letter-spacing: 2px; color: #ffd23f; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
+    #hud .carinfo { font-size: 14px; font-weight: 700; color: #f4f1e8; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
+    #hud .radio { font-size: 13px; color: #8ecbff; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
     #hud .speed { font-size: 34px; font-weight: 800; text-shadow: 0 2px 8px rgba(0,0,0,0.8); }
     #hud .speed small { font-size: 13px; font-weight: 600; color: #c9c4b4; }
     #hud .clock { font-size: 16px; color: #c9c4b4; text-shadow: 0 2px 6px rgba(0,0,0,0.8); }
     #hud .toasts { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; align-items: center; }
     #hud .toast { padding: 8px 16px; font-size: 15px; font-weight: 600; white-space: nowrap; }
-    #hud .brief { position: absolute; top: 84px; left: 50%; transform: translateX(-50%); padding: 16px 24px; max-width: 560px; text-align: center; }
-    #hud .brief h2 { margin: 0 0 6px; font-size: 22px; letter-spacing: 1px; color: #ffd23f; }
+    #hud .brief { position: absolute; top: 84px; left: 50%; transform: translateX(-50%); padding: 14px 18px; max-width: 560px; text-align: left; display: flex; gap: 14px; align-items: flex-start; }
+    #hud .brief canvas { flex: 0 0 auto; border-radius: 8px; border: 1px solid rgba(255,210,63,0.5); }
+    #hud .brief .brief-body { min-width: 0; }
+    #hud .brief h2 { margin: 0 0 2px; font-size: 20px; letter-spacing: 1px; color: #ffd23f; }
+    #hud .brief .brief-who { font-size: 12px; font-weight: 800; letter-spacing: 2px; color: #8ecbff; margin-bottom: 4px; }
     #hud .brief p { margin: 0; font-size: 15px; line-height: 1.45; }
     #hud .flash { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; background: rgba(10,0,0,0.55); }
     #hud .flash h1 { font-size: 72px; margin: 0; letter-spacing: 8px; color: #ff5347; text-shadow: 0 4px 24px rgba(0,0,0,0.9); }
@@ -70,6 +160,9 @@ export function createHud(callbacks) {
   `;
   document.head.appendChild(style);
 
+  // --- damage vignette (red edges when hurt) ---
+  const vignette = el('div', 'vignette', root);
+
   // --- minimap ---
   const minimapWrap = el('div', 'panel minimap-wrap', root);
   el('div', 'city-name', minimapWrap, 'SOLMAR CITY');
@@ -78,29 +171,72 @@ export function createHud(callbacks) {
   minimap.height = 200;
   const mm = minimap.getContext('2d');
 
-  // --- top right: stars, cash, health ---
+  // --- top right: stars, cash, health, respect ---
   const topRight = el('div', 'top-right', root);
   const starsEl = el('div', 'stars', topRight);
   const cashEl = el('div', 'cash', topRight, '$0');
   const healthBar = el('div', 'health-bar', topRight);
   const healthFill = el('div', 'health-fill', healthBar);
+  const armorEl = el('div', 'armor hidden', topRight, '');
+  const respectEl = el('div', 'respect', topRight, 'RESPECT 0 · STREET RAT');
+  const respectBar = el('div', 'respect-bar', topRight);
+  const respectFill = el('div', 'respect-fill', respectBar);
+
+  // --- dispatch: live police units (callsign, role, distance) ---
+  const dispatchPanel = el('div', 'panel dispatch hidden', root);
+  el('div', 'dispatch-title', dispatchPanel, 'SOLMAR PD — DISPATCH');
+  const dispatchRows = el('div', '', dispatchPanel);
+
+  // --- weapon slots (click or Q to cycle; 1–4 when away from the garage) ---
+  const weaponsEl = el('div', 'weapons', root);
+  const slotEls = WEAPONS.map((w) => {
+    const slot = el('div', 'slot', weaponsEl);
+    el('div', 'key', slot, String(w.slot));
+    el('div', 'wname', slot, w.name);
+    slot.addEventListener('click', () => callbacks.onWeapon && callbacks.onWeapon(w.id));
+    return { weapon: w, slot, nameEl: slot.querySelector('.wname') };
+  });
+
+  // --- garage shop (buttons; keys 1–6 do the same) ---
+  const shopPanel = el('div', 'panel shop hidden', root);
+  el('div', 'shop-title', shopPanel, 'RICO’S GARAGE — 1 · 2 · 3 · 4 · 5 · 6 TO BUY');
+  const shopRow = el('div', 'shop-row', shopPanel);
+  const shopButtons = SHOP_ITEMS.map((item) => {
+    const btn = el('button', '', shopRow, `${item.name} — $${item.price}`);
+    btn.addEventListener('click', () => callbacks.onShop && callbacks.onShop(item.id));
+    return { item, btn };
+  });
+  const weaponRow = el('div', 'shop-row', shopPanel);
+  const weaponButtons = WEAPON_ITEMS.map((item) => {
+    const btn = el('button', '', weaponRow, `${item.name} — $${item.price}`);
+    btn.addEventListener('click', () => callbacks.onWeaponBuy && callbacks.onWeaponBuy(item.id));
+    return { item, btn };
+  });
 
   // --- objective (bottom left) ---
   const objective = el('div', 'panel objective', root);
   const missionTitle = el('div', 'mission-title', objective, '');
   const missionText = el('div', 'mission-text', objective, '');
 
-  // --- speed + clock (bottom right) ---
+  // --- speed + clock + district + car + radio (bottom right) ---
   const bottomRight = el('div', 'bottom-right', root);
+  const districtEl = el('div', 'district', bottomRight, 'DOWNTOWN');
+  const carEl = el('div', 'carinfo', bottomRight, 'ON FOOT');
+  const radioEl = el('div', 'radio', bottomRight, '');
   const speedEl = el('div', 'speed', bottomRight);
   speedEl.innerHTML = '0 <small>km/h</small>';
   const clockEl = el('div', 'clock', bottomRight, '08:00');
 
-  // --- toasts + brief ---
+  // --- toasts + brief (with job-giver portrait) ---
   const toasts = el('div', 'toasts', root);
   const brief = el('div', 'panel brief hidden', root);
-  const briefTitle = el('h2', '', brief, '');
-  const briefText = el('p', '', brief, '');
+  const portrait = el('canvas', '', brief);
+  portrait.width = 76;
+  portrait.height = 76;
+  const briefBody = el('div', 'brief-body', brief);
+  const briefTitle = el('h2', '', briefBody, '');
+  const briefWho = el('div', 'brief-who', briefBody, '');
+  const briefText = el('p', '', briefBody, '');
 
   // --- flash (busted / wasted / win) ---
   const flash = el('div', 'flash hidden', root);
@@ -112,9 +248,9 @@ export function createHud(callbacks) {
   const titleCard = el('div', 'card', titleScreen);
   el('h1', '', titleCard, 'SOLMAR');
   el('h2', '', titleCard, 'A SUN-SOAKED OPEN-WORLD CRIME STORY');
-  el('p', '', titleCard, 'Rico’s crew runs Solmar City — downtown towers, the marina, the barrio. Steal cars, outrun the law, run six jobs and take the city.');
+  el('p', '', titleCard, 'Rico’s crew runs Solmar City — downtown towers, the marina, the barrio. Steal cars, outrun the law, run eight jobs and take the city.');
   const keys = el('div', 'keys', titleCard);
-  keys.innerHTML = 'WASD / Arrows — move &amp; drive &nbsp;·&nbsp; E — enter / steal car<br>Mouse — aim &nbsp;·&nbsp; Click / F — shoot &nbsp;·&nbsp; Space — punch &nbsp;·&nbsp; Shift — run<br>P / Esc — pause &nbsp;·&nbsp; Save at Rico’s Garage';
+  keys.innerHTML = 'WASD / Arrows — move &amp; drive &nbsp;·&nbsp; E — enter / steal car<br>Mouse — aim &nbsp;·&nbsp; Click / F — shoot &nbsp;·&nbsp; Space — punch &nbsp;·&nbsp; Q — switch weapon<br>P / Esc — pause &nbsp;·&nbsp; R — radio station &nbsp;·&nbsp; 1–6 — garage shop (near Rico’s) &nbsp;·&nbsp; Save at Rico’s Garage';
   const startBtn = el('button', '', titleCard, 'START ENGINE');
   const continueBtn = el('button', 'secondary hidden', titleCard, 'CONTINUE');
   startBtn.addEventListener('click', () => callbacks.onStart(false));
@@ -127,7 +263,6 @@ export function createHud(callbacks) {
   const resumeBtn = el('button', '', pauseCard, 'RESUME');
   resumeBtn.addEventListener('click', () => callbacks.onResume());
 
-  // Pre-render the minimap base (roads, water, districts) once.
   const base = document.createElement('canvas');
   base.width = 200;
   base.height = 200;
@@ -157,8 +292,6 @@ export function createHud(callbacks) {
   let cashShown = 0;
   let briefTimer = null;
 
-  // In shot mode GSAP's ticker cannot be trusted under virtual time, so
-  // every animation lands in its final state at once.
   const shotMode = () => !!window.__shotMode;
 
   function pop(node) {
@@ -180,9 +313,18 @@ export function createHud(callbacks) {
     }
   }
 
-  function showBrief(title, text) {
+  function showBrief(title, text, face) {
     briefTitle.textContent = title;
     briefText.textContent = text;
+    if (face) {
+      briefWho.textContent = `${face.name} — ${face.role}`;
+      briefWho.classList.remove('hidden');
+      portrait.classList.remove('hidden');
+      drawPortrait(portrait, face);
+    } else {
+      briefWho.textContent = '';
+      portrait.classList.add('hidden');
+    }
     brief.classList.remove('hidden');
     if (shotMode()) return;
     if (gsap) {
@@ -238,13 +380,66 @@ export function createHud(callbacks) {
     const hp = Math.max(0, state.player.health);
     healthFill.style.width = `${hp}%`;
     healthFill.style.background = hp < 30 ? '#e5534b' : '#58d158';
-    // Speed + clock.
+    const armor = state.player.armor || 0;
+    armorEl.classList.toggle('hidden', armor <= 0);
+    if (armor > 0) armorEl.textContent = `ARMOR ${armor}`;
+    const respect = state.player.respect || 0;
+    const rank = rankForRespect(respect);
+    respectEl.textContent = `RESPECT ${respect} · ${rank.rank}`;
+    const prevAt = [...RESPECT_RANKS].reverse().find((r) => respect >= r.at)?.at || 0;
+    respectFill.style.width = rank.nextAt ? `${Math.min(100, ((respect - prevAt) / (rank.nextAt - prevAt)) * 100)}%` : '100%';
+    const units = state.wanted.stars > 0 ? dispatchUnits(state) : [];
+    dispatchPanel.classList.toggle('hidden', units.length === 0);
+    if (units.length > 0) {
+      let html = '';
+      for (const u of units) {
+        html += `<div class="unit"><span>${u.callsign} <span class="role">${u.role}</span></span><span class="dist">${u.dist}m</span></div>`;
+      }
+      dispatchRows.innerHTML = html;
+    }
+    const weapons = ensureWeapons(state.player);
+    const current = currentWeapon(state.player);
+    for (const { weapon, slot, nameEl } of slotEls) {
+      const owned = weapons.owned.includes(weapon.id);
+      slot.classList.toggle('current', weapon.id === current.id);
+      slot.classList.toggle('locked', !owned);
+      nameEl.textContent = owned ? weapon.name : 'LOCKED';
+    }
+    const carHp = state.player.inCar ? state.player.inCar.health : 100;
+    const worst = Math.min(hp, carHp);
+    vignette.style.opacity = worst < 35 ? String(((35 - worst) / 35) * 0.55) : '0';
+    const near = nearShop(state);
+    shopPanel.classList.toggle('hidden', !near);
+    if (near) {
+      for (const { item, btn } of shopButtons) {
+        const check = canBuy(state, item.id);
+        btn.disabled = !check.ok;
+        btn.title = check.ok ? item.desc : check.reason;
+      }
+      for (const { item, btn } of weaponButtons) {
+        const check = canBuyWeapon(state, item.id);
+        btn.disabled = !check.ok;
+        btn.title = check.ok ? item.desc : check.reason;
+        if (check.ok) btn.textContent = `${item.name} — $${item.price}`;
+        else if ((state.player.weapons?.owned || []).includes(item.id)) btn.textContent = `${item.name} — OWNED`;
+        else btn.textContent = `${item.name} — $${item.price}`;
+      }
+    }
+    // Speed + clock + district + car + radio.
     const kmh = Math.round(Math.abs(state.player.inCar ? state.player.inCar.speed : state.player.speed) * 0.24);
     speedEl.innerHTML = state.player.inCar ? `${kmh} <small>km/h</small>` : '';
     clockEl.textContent = `${formatClock(state.clock)}  ·  PKG ${state.stats.packages}  ·  FARES ${state.stats.fares}`;
+    districtEl.textContent = districtName(state);
+    carEl.textContent = state.player.inCar
+      ? `${state.player.inCar.model} · COND ${Math.max(0, Math.round(state.player.inCar.health))}%`
+      : 'ON FOOT';
+    if (state.radioLine) radioEl.textContent = state.radioLine;
     // Objective.
     missionTitle.textContent = state.missionTitle || '';
     missionText.textContent = state.missionObjective || '';
+    if (state.race && state.race.active) {
+      missionText.textContent += `  ·  RACE ${state.race.timer.toFixed(1)}s — checkpoint ${state.race.idx}/${state.race.checkpoints.length - 1}`;
+    }
 
     // --- minimap ---
     const s = 200 / size;

@@ -11,7 +11,9 @@ export function createPlayer(x, z) {
     angle: 0, // facing, radians; 0 = +z (south)
     speed: 0,
     health: PLAYER.healthMax,
+    armor: 0, // vest: absorbs damage before health (garage shop)
     cash: 0,
+    respect: 0, // street standing: missions and races raise it
     inCar: null,
     punchCooldown: 0,
     shootCooldown: 0,
@@ -46,8 +48,6 @@ export function updatePlayer(state, move, aimAngle, dt) {
   }
 
   const speed = state.inputRunning ? PLAYER.runSpeed : PLAYER.walkSpeed;
-  // Camera-relative movement: the camera sits behind the player's heading,
-  // so W runs away from the camera, D strafes screen-right.
   const fx = Math.sin(player.angle);
   const fz = Math.cos(player.angle);
   const rx = -Math.cos(player.angle);
@@ -104,6 +104,13 @@ export function tryEnterCar(state) {
 export function damagePlayer(state, amount) {
   const player = state.player;
   if (player.invulnerable > 0) return false;
+  // Armor soaks damage first.
+  const armor = player.armor || 0;
+  if (armor > 0) {
+    const soaked = Math.min(armor, amount);
+    player.armor = armor - soaked;
+    amount -= soaked;
+  }
   player.health -= amount;
   player.invulnerable = 0.4;
   if (player.health <= 0) {

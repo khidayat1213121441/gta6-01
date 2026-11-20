@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import { CITY } from './config.js';
 import { districtAt } from './world.js';
+import { currentWeapon } from './combat.js';
 
 const { pitch, size } = CITY;
 const TEX = 2048;
@@ -39,7 +40,6 @@ function paintGround(city) {
       ctx.fillRect(bx * pitch * SCALE, bz * pitch * SCALE, pitch * SCALE, pitch * SCALE);
     }
   }
-  // Roads: asphalt strips between blocks, with edge lines and dashes.
   ctx.fillStyle = '#3a3d44';
   for (let i = 0; i < 40; i += 1) {
     const c = i * pitch * SCALE;
@@ -91,7 +91,56 @@ function lighten(hex, amount) {
   return (r << 16) | (g << 8) | b;
 }
 
-// Shared geometries / materials so every car and ped reuses them.
+// Building faces: a window grid painted once onto two small canvases and
+// shared by every building (one InstancedMesh, one material). The colour
+// map is near-white so each building's instance colour still shows, with
+// dark window cells so the grid reads in daylight; the emissive map is
+// black except for the lit windows, so at dusk only the windows glow warm
+// against the wall instead of the whole facade washing orange. Both maps
+// paint the same cells, decided by a fixed hash so they can never drift.
+function paintBuildingWindows() {
+  const COLS = 8;
+  const ROWS = 14;
+  const W = 256;
+  const H = 256;
+  const cw = W / COLS;
+  const ch = H / ROWS;
+  const map = document.createElement('canvas');
+  const emissive = document.createElement('canvas');
+  map.width = W; map.height = H;
+  emissive.width = W; emissive.height = H;
+  const mctx = map.getContext('2d');
+  const ectx = emissive.getContext('2d');
+  mctx.fillStyle = '#ffffff';
+  mctx.fillRect(0, 0, W, H);
+  ectx.fillStyle = '#000000';
+  ectx.fillRect(0, 0, W, H);
+  for (let cy = 0; cy < ROWS; cy += 1) {
+    for (let cx = 0; cx < COLS; cx += 1) {
+      // Deterministic hash: ~40% of windows lit, the rest dark glass.
+      const lit = ((cx * 7 + cy * 13 + cx * cy * 5) % 10) < 4;
+      const x = Math.round(cx * cw + 5);
+      const y = Math.round(cy * ch + 4);
+      const w = Math.round(cw - 10);
+      const h = Math.round(ch - 8);
+      if (lit) {
+        mctx.fillStyle = '#ffe6a8';
+        mctx.fillRect(x, y, w, h);
+        ectx.fillStyle = '#ffb347';
+        ectx.fillRect(x, y, w, h);
+      } else {
+        mctx.fillStyle = '#33333e';
+        mctx.fillRect(x, y, w, h);
+      }
+    }
+  }
+  const mapTex = new THREE.CanvasTexture(map);
+  mapTex.colorSpace = THREE.SRGBColorSpace;
+  const emissiveTex = new THREE.CanvasTexture(emissive);
+  emissiveTex.colorSpace = THREE.SRGBColorSpace;
+  return { map: mapTex, emissiveMap: emissiveTex };
+}
+
 const boxGeo = new THREE.BoxGeometry(1, 1, 1);
 const wheelGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.5, 10);
 const pedBodyGeo = new THREE.CylinderGeometry(0.55, 0.7, 1.7, 8);
@@ -100,7 +149,6 @@ const bulletGeo = new THREE.BoxGeometry(1.2, 1.2, 10);
 
 function makeCarMesh(color, isPolice) {
   const group = new THREE.Group();
-  // The mesh is built at 1/10 scale and scaled up: a car is 54 long, 26 wide.
   group.scale.set(10, 10, 10);
   const bodyMat = new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0.45 });
   const body = new THREE.Mesh(boxGeo, bodyMat);
@@ -145,7 +193,6 @@ function makeCarMesh(color, isPolice) {
 
 function makePedMesh(color) {
   const group = new THREE.Group();
-  // Built at 1/8 scale: a person stands ~22 units tall, a car ~14.
   group.scale.setScalar(8);
   const body = new THREE.Mesh(pedBodyGeo, new THREE.MeshStandardMaterial({ color, roughness: 0.8 }));
   body.position.y = 1.15;
@@ -175,7 +222,6 @@ export function createRenderer(canvas, state) {
 
   const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x8a7a5a, 1.2);
   scene.add(hemi);
-  // Fill light from the opposite side so shadowed faces stay readable.
   const fill = new THREE.DirectionalLight(0xbfd0e8, 0.85);
   fill.position.set(-200, 160, -120);
   scene.add(fill);
@@ -202,7 +248,6 @@ export function createRenderer(canvas, state) {
   ground.receiveShadow = true;
   scene.add(ground);
 
-  // Sea surface (east edge) — a gentle blue sheen over the painted water.
   const sea = new THREE.Mesh(
     new THREE.PlaneGeometry(size - 38 * pitch, size),
     new THREE.MeshStandardMaterial({ color: 0x2b7fb8, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.55 }),
@@ -211,9 +256,12 @@ export function createRenderer(canvas, state) {
   sea.position.set(38 * pitch + (size - 38 * pitch) / 2, 0.4, size / 2);
   scene.add(sea);
 
-  // Buildings as one InstancedMesh + lighter roof caps.
   const city = state.city;
-  const buildingMesh = new THREE.InstancedMesh(boxGeo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), city.buildings.length);
+  const windowTex = paintBuildingWindows();
+  const buildingMesh = new THREE.InstancedMesh(boxGeo, new THREE.MeshStandardMaterial({
+    roughness: 0.85, map: windowTex.map, emissiveMap: windowTex.emissiveMap,
+    emissive: 0xffffff, emissiveIntensity: 0.1,
+  }), city.buildings.length);
   const roofMesh = new THREE.InstancedMesh(boxGeo, new THREE.MeshStandardMaterial({ roughness: 0.9 }), city.buildings.length);
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
@@ -265,7 +313,6 @@ export function createRenderer(canvas, state) {
   scene.add(trunkMesh);
   scene.add(canopyMesh);
 
-  // Mission marker: a light beam + a ground ring, moved to the target.
   const beam = new THREE.Mesh(
     new THREE.CylinderGeometry(14, 22, 200, 12, 1, true),
     new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false }),
@@ -286,6 +333,54 @@ export function createRenderer(canvas, state) {
   taxiRing.rotation.x = -Math.PI / 2;
   taxiRing.position.y = 0.6;
   scene.add(taxiRing);
+  // Street-race checkpoint ring.
+  const raceRing = new THREE.Mesh(
+    new THREE.RingGeometry(30, 44, 32),
+    new THREE.MeshBasicMaterial({ color: 0xff5a3a, transparent: true, opacity: 0.9, side: THREE.DoubleSide }),
+  );
+  raceRing.rotation.x = -Math.PI / 2;
+  raceRing.position.y = 0.6;
+  scene.add(raceRing);
+
+  const heliGroup = new THREE.Group();
+  const heliBody = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x1c3a6e, roughness: 0.5, metalness: 0.4 }));
+  heliBody.scale.set(26, 10, 40);
+  heliBody.position.y = 0;
+  heliGroup.add(heliBody);
+  const heliRotor = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x141414, roughness: 0.9 }));
+  heliRotor.scale.set(90, 1.5, 4);
+  heliRotor.position.y = 8;
+  heliGroup.add(heliRotor);
+  const heliLight = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 1.5 }));
+  heliLight.scale.set(6, 4, 6);
+  heliLight.position.set(0, -6, 14);
+  heliGroup.add(heliLight);
+  heliGroup.visible = false;
+  scene.add(heliGroup);
+  const spotCone = new THREE.Mesh(
+    new THREE.ConeGeometry(42, 1, 20, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.1, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  spotCone.visible = false;
+  scene.add(spotCone);
+  const spotPool = new THREE.Mesh(
+    new THREE.CircleGeometry(45, 24),
+    new THREE.MeshBasicMaterial({ color: 0xfff2b0, transparent: true, opacity: 0.22, side: THREE.DoubleSide, depthWrite: false }),
+  );
+  spotPool.rotation.x = -Math.PI / 2;
+  spotPool.position.y = 0.7;
+  spotPool.visible = false;
+  scene.add(spotPool);
+
+  const clouds = [];
+  const cloudMat = new THREE.MeshBasicMaterial({ color: 0xffd9b0, transparent: true, opacity: 0.35, fog: false });
+  for (let i = 0; i < 10; i += 1) {
+    const cloud = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 6), cloudMat);
+    cloud.scale.set(70 + state.rng() * 60, 8 + state.rng() * 6, 26 + state.rng() * 18);
+    cloud.position.set(state.rng() * size, 380 + state.rng() * 120, state.rng() * size);
+    scene.add(cloud);
+    clouds.push(cloud);
+  }
 
   // Packages: small glowing orange boxes.
   const packageMeshes = city.packages.map(() => {
@@ -309,9 +404,26 @@ export function createRenderer(canvas, state) {
   }
   const playerMesh = makePedMesh(0xff6a1a);
   playerMesh.scale.setScalar(9.2); // the hero reads bigger than a passer-by
+  // The hero is not another orange ped: dark jacket, so the silhouette
+  // reads as a person against the road instead of a traffic cone.
+  playerMesh.children[0].material.color.setHex(0x2b3247);
   scene.add(playerMesh);
+  // Gun group: a pistol big enough to read at chase-cam distance, held
+  // out at the player's right side so it reads from behind the player
+  // (a forward-held gun is hidden by the torso from the chase camera).
+  // Children of the player mesh, so scale and position are in the mesh's
+  // local units (the group is scaled ~9x).
+  const gunGroup = new THREE.Group();
+  const gunMesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.35, metalness: 0.7 }));
+  gunMesh.scale.set(0.26, 0.26, 1.1);
+  gunMesh.position.set(0.85, 1.15, 0.6);
+  gunGroup.add(gunMesh);
+  const armMesh = new THREE.Mesh(boxGeo, new THREE.MeshStandardMaterial({ color: 0x2b3247, roughness: 0.8 }));
+  armMesh.scale.set(0.2, 0.2, 0.9);
+  armMesh.position.set(0.7, 1.3, 0.25);
+  gunGroup.add(armMesh);
+  playerMesh.add(gunGroup);
 
-  // Particles: one Points cloud, positions rewritten each frame.
   const MAX_PARTICLES = 400;
   const particleGeo = new THREE.BufferGeometry();
   const particlePos = new Float32Array(MAX_PARTICLES * 3);
@@ -332,7 +444,8 @@ export function createRenderer(canvas, state) {
   window.addEventListener('resize', resize);
 
   const daySky = new THREE.Color(0x87b5d6);
-  const duskSky = new THREE.Color(0xe8935a);
+  const duskSky = new THREE.Color(0xea7a44);
+  const duskSkyLow = new THREE.Color(0x8a4a8a);
   const nightSky = new THREE.Color(0x0e1a2e);
   const dayFog = new THREE.Color(0x9fc3dd);
   const duskFog = new THREE.Color(0xd88a5e);
@@ -347,10 +460,17 @@ export function createRenderer(canvas, state) {
     const elevation = Math.sin(sunAngle);
     const dayFactor = Math.max(0, Math.min(1, elevation * 2.2 + 0.25));
     const duskFactor = Math.max(0, 1 - Math.abs(elevation) * 4) * (elevation > -0.15 ? 1 : 0);
-    sky.copy(nightSky).lerp(daySky, dayFactor).lerp(duskSky, duskFactor * 0.7);
+    sky.copy(nightSky).lerp(daySky, dayFactor).lerp(duskSky, duskFactor * 0.7).lerp(duskSkyLow, duskFactor * 0.25);
     fog.copy(nightFog).lerp(dayFog, dayFactor).lerp(duskFog, duskFactor * 0.7);
     scene.background.copy(sky);
     scene.fog.color.copy(fog);
+    // Lit windows only: the emissive map is black except for lit cells,
+    // so the glow reads as windows, not a flat orange wash. A small base
+    // keeps the grid legible before dusk; dusk pushes it to a real glow.
+    buildingMesh.material.emissive.setHex(0xffffff);
+    buildingMesh.material.emissiveIntensity = 0.12 + duskFactor * 1.5;
+    roofMesh.material.emissive.setHex(0xff9a3d);
+    roofMesh.material.emissiveIntensity = duskFactor * 0.12;
     scene.fog.near = 700 + dayFactor * 300;
     scene.fog.far = 2000 + dayFactor * 900;
     const sunDir = new THREE.Vector3(Math.cos(sunAngle) * 0.7, Math.max(0.12, elevation), 0.45).normalize();
@@ -375,7 +495,6 @@ export function createRenderer(canvas, state) {
       }
       mesh.position.set(car.x, 0, car.z);
       mesh.rotation.y = car.angle;
-      // Secondary motion: body leans into steering, dips on acceleration.
       const ud = mesh.userData;
       const steerLean = Math.max(-0.06, Math.min(0.06, -car.speed * 0.00012 * Math.sin(car.angle)));
       ud.body.rotation.z = steerLean;
@@ -422,6 +541,46 @@ export function createRenderer(canvas, state) {
     if (!player.inCar) {
       playerMesh.position.set(player.x, player.moving ? Math.abs(Math.sin(time * 9)) * 0.8 : 0, player.z);
       playerMesh.rotation.y = player.angle;
+      gunGroup.visible = currentWeapon(player).id !== 'fists';
+    }
+
+    // --- helicopter + searchlight ---
+    const heli = state.heli;
+    const heliOn = !!(heli && heli.active);
+    heliGroup.visible = heliOn;
+    spotCone.visible = heliOn;
+    spotPool.visible = heliOn;
+    if (heliOn) {
+      heliGroup.position.set(heli.x, heli.height, heli.z);
+      heliGroup.rotation.y = heli.angle;
+      heliRotor.rotation.y = time * 22;
+      const top = new THREE.Vector3(heli.x, heli.height, heli.z);
+      const bottom = new THREE.Vector3(player.x, 0, player.z);
+      const mid = top.clone().add(bottom).multiplyScalar(0.5);
+      const len = top.distanceTo(bottom);
+      spotCone.position.copy(mid);
+      spotCone.scale.set(1, len, 1);
+      const dir = top.clone().sub(bottom).normalize();
+      spotCone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      spotPool.position.set(player.x, 0.7, player.z);
+      const poolPulse = 1 + Math.sin(time * 5) * 0.06;
+      spotPool.scale.set(poolPulse, poolPulse, 1);
+    }
+
+    // --- clouds drift ---
+    for (const cloud of clouds) {
+      cloud.position.x += dt * 3;
+      if (cloud.position.x > size + 200) cloud.position.x = -200;
+    }
+
+    // --- race ring ---
+    const race = state.race;
+    const showRace = !!(race && race.active && race.target);
+    raceRing.visible = showRace;
+    if (showRace) {
+      raceRing.position.set(race.target.x, 0.6, race.target.z);
+      const pulse = 1 + Math.sin(time * 4) * 0.15;
+      raceRing.scale.set(pulse, pulse, 1);
     }
 
     // --- bullets ---

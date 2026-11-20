@@ -5,6 +5,7 @@
 import { CITY, WANTED } from './config.js';
 import { collideCircle, distance, nearestRoadPoint, roadCenter } from './world.js';
 import { driveCar, removeCar, spawnPoliceCar } from './vehicles.js';
+import { updateHelicopter } from './helicopter.js';
 
 const { pitch, road } = CITY;
 
@@ -39,10 +40,15 @@ function copCountFor(stars) {
   return Math.min(WANTED.maxCopCars, stars + 1);
 }
 
+function copCountForMission(state, stars) {
+  const n = copCountFor(stars);
+  if (state.mission.index === 5 && !state.mission.done) return Math.min(n, 4);
+  if (state.mission.index === 7 && !state.mission.done) return Math.min(n, 3);
+  return n;
+}
+
 function spawnCopCar(state) {
   const player = state.player;
-  // Most cruisers join the chase from behind the player's direction of
-  // travel (a chase, not a roadblock); a quarter still cut across.
   let angle;
   if (state.rng() < 0.75) {
     angle = player.angle + Math.PI + (state.rng() - 0.5) * 3.5;
@@ -52,8 +58,6 @@ function spawnCopCar(state) {
   const dist = 700 + state.rng() * 300;
   const x = Math.max(60, Math.min(state.city.size - 60, player.x + Math.sin(angle) * dist));
   const z = Math.max(60, Math.min(state.city.size - 60, player.z + Math.cos(angle) * dist));
-  // Spawn on the road network, not inside a block: a cruiser dropped
-  // in the middle of a building can never drive out to the player.
   const rp = nearestRoadPoint(x, z);
   const car = spawnPoliceCar(state, rp.x, rp.z);
   const vertical = Math.abs(rp.x - x) <= Math.abs(rp.z - z);
@@ -70,9 +74,6 @@ function spawnCopCar(state) {
   return car;
 }
 
-// Drive one step along the road grid toward the player. The cruiser keeps
-// to its current road until an intersection, where it turns onto the cross
-// road only if that lands it closer to the player (one-block lookahead).
 function driveCopRoad(state, car, dt) {
   const player = state.player;
   let onV = car.road === 'v';
@@ -80,7 +81,6 @@ function driveCopRoad(state, car, dt) {
   const fixed = onV ? car.x : car.z;
   const playerPos = onV ? player.z : player.x;
   const playerFixed = onV ? player.x : player.z;
-  // At an intersection, decide whether turning helps.
   const nearest = Math.round((pos - road / 2) / pitch) * pitch + road / 2;
   if (Math.abs(pos - nearest) < 10 && car.turnAt !== nearest) {
     car.turnAt = nearest;
@@ -91,7 +91,6 @@ function driveCopRoad(state, car, dt) {
     if (dTurn < dContinue - 4) {
       car.road = onV ? 'h' : 'v';
       car.dir = turnDir;
-      // Snap onto the cross road centreline, like traffic does.
       if (onV) car.z = nearest;
       else car.x = nearest;
       onV = car.road === 'v';
@@ -106,7 +105,6 @@ function driveCopRoad(state, car, dt) {
   while (diff < -Math.PI) diff += Math.PI * 2;
   const steer = Math.max(-1, Math.min(1, diff * 2.2));
   driveCar(state, car, 1, steer, dt);
-  // Pull back to the lane centreline so the cruiser stays on its road.
   const center = roadCenter(Math.round(((onV ? car.x : car.z) - road / 2) / pitch));
   const offset = (onV ? car.x : car.z) - center;
   if (onV) car.x -= offset * 0.03;
@@ -128,11 +126,80 @@ function spawnFootCop(state) {
   });
 }
 
+function spawnRoadblock(state) {
+  const player = state.player;
+  const ahead = nearestRoadPoint(
+    player.x + Math.sin(player.angle) * 480,
+    player.z + Math.cos(player.angle) * 480,
+  );
+  const across = Math.abs(Math.sin(player.angle)) >= Math.abs(Math.cos(player.angle)) ? 'v' : 'h';
+  const cars = [];
+  for (const offset of [-22, 22]) {
+    const x = across === 'v' ? ahead.x + offset : ahead.x;
+    const z = across === 'v' ? ahead.z : ahead.z + offset;
+    const car = spawnPoliceCar(state, x, z);
+    car.angle = across === 'v' ? Math.PI / 2 : 0; // parked across the road
+    car.speed = 0;
+    car.roadblock = true;
+    car.ramCd = 0;
+    cars.push(car);
+  }
+  state.roadblocks.push({ x: ahead.x, z: ahead.z, cars });
+  state.events.push({ type: 'message', text: 'Roadblock ahead — Solmar PD is boxing you in.' });
+}
+
+function updateRoadblocks(state, dt) {
+  if (!state.roadblocks) state.roadblocks = [];
+  const player = state.player;
+  if (state.wanted.stars >= 4) {
+    state.roadblockTimer = Math.max(0, (state.roadblockTimer || 0) - dt);
+    const live = state.roadblocks.filter((rb) => distance(rb.x, rb.z, player.x, player.z) < 1200);
+    if (live.length === 0 && state.roadblockTimer <= 0 && state.rng() < 0.05) {
+      spawnRoadblock(state);
+      state.roadblockTimer = 8;
+    }
+  } else if (state.roadblocks.length > 0) {
+    for (const rb of state.roadblocks) for (const car of rb.cars) removeCar(state, car);
+    state.roadblocks = [];
+  }
+  // Prune roadblocks left far behind.
+  state.roadblocks = state.roadblocks.filter((rb) => {
+    if (distance(rb.x, rb.z, player.x, player.z) > 1400) {
+      for (const car of rb.cars) removeCar(state, car);
+      return false;
+    }
+    return true;
+  });
+}
+
+/** Live police units for the HUD dispatch panel: callsign, role, metres. */
+export function dispatchUnits(state) {
+  const player = state.player;
+  const units = [];
+  const m = (d) => Math.max(1, Math.round(d / 10));
+  if (state.heli && state.heli.active) {
+    units.push({ callsign: 'AIR-1', role: 'SPOTLIGHT', dist: m(distance(state.heli.x, state.heli.z, player.x, player.z)) });
+  }
+  for (const rb of state.roadblocks || []) {
+    units.push({ callsign: 'RB-1', role: 'ROADBLOCK', dist: m(distance(rb.x, rb.z, player.x, player.z)) });
+  }
+  const cruisers = state.cars
+    .filter((c) => c.kind === 'police' && !c.roadblock)
+    .map((c) => ({ car: c, d: distance(c.x, c.z, player.x, player.z) }))
+    .sort((a, b) => a.d - b.d);
+  cruisers.forEach(({ car, d }, i) => {
+    units.push({ callsign: `PD-${i + 1}`, role: d < 150 ? 'RAMMING' : 'CLOSING IN', dist: m(d) });
+  });
+  return units.slice(0, 5);
+}
+
 export function updatePolice(state, dt) {
   const wanted = state.wanted;
   const player = state.player;
 
-  // How close is the nearest cop? That decides whether heat can decay.
+  updateHelicopter(state, dt);
+  updateRoadblocks(state, dt);
+
   let nearestCop = Infinity;
   for (const car of state.cars) {
     if (car.kind === 'police') nearestCop = Math.min(nearestCop, distance(car.x, car.z, player.x, player.z));
@@ -145,7 +212,7 @@ export function updatePolice(state, dt) {
   if (wanted.stars > 0) {
     if (seen) wanted.unseen = 0;
     else {
-      wanted.unseen += dt;
+      wanted.unseen += dt * (wanted.heliSpot ? 0.5 : 1);
       if (wanted.unseen > WANTED.decayUnseenSeconds) {
         wanted.unseen = 0;
         wanted.heat = Math.max(0, wanted.heat - 30);
@@ -154,10 +221,8 @@ export function updatePolice(state, dt) {
       }
     }
 
-    // Keep the right number of police cars on the road.
-    const copCars = state.cars.filter((c) => c.kind === 'police');
-    if (copCars.length < copCountFor(wanted.stars) && state.rng() < 0.1) spawnCopCar(state);
-    // Too far away? Despawn and respawn closer (keeps the chase fair).
+    const copCars = state.cars.filter((c) => c.kind === 'police' && !c.roadblock);
+    if (copCars.length < copCountForMission(state, wanted.stars) && state.rng() < 0.1) spawnCopCar(state);
     for (const car of copCars) {
       if (distance(car.x, car.z, player.x, player.z) > 1400) removeCar(state, car);
     }
@@ -169,15 +234,30 @@ export function updatePolice(state, dt) {
   }
 
   // --- police cars chase and ram ---
-  // Cruisers drive the road grid toward the player (driveCopRoad) instead
-  // of beelining through buildings, which wedged them against walls
-  // forever. Inside 130 units they switch to a direct run at the player
-  // for the ram. On foot the player outruns a cruiser through the alleys:
-  // cop speed is capped below run speed so losing them on foot is possible.
   for (const car of state.cars) {
     if (car.kind !== 'police') continue;
     car.sirenPhase += dt * 6;
     car.ramCd = Math.max(0, (car.ramCd || 0) - dt);
+    if (car.roadblock) {
+      const rdx = player.x - car.x;
+      const rdz = player.z - car.z;
+      const rdist = Math.hypot(rdx, rdz) || 1;
+      if (rdist < 46 && car.ramCd <= 0) {
+        car.ramCd = 1.5;
+        if (player.inCar) {
+          player.inCar.health -= 6;
+          player.inCar.speed *= 0.35;
+          if (player.inCar.health <= 0) {
+            state.events.push({ type: 'car-wrecked' });
+            player.inCar.health = 0;
+          }
+        } else if (player.invulnerable <= 0) {
+          player.health -= 6;
+        }
+        state.events.push({ type: 'ram', x: car.x, z: car.z });
+      }
+      continue;
+    }
     const dx = player.x - car.x;
     const dz = player.z - car.z;
     const dist = Math.hypot(dx, dz) || 1;
@@ -190,28 +270,34 @@ export function updatePolice(state, dt) {
       while (diff < -Math.PI) diff += Math.PI * 2;
       const steer = Math.max(-1, Math.min(1, diff * 2.2));
       const throttle = dist > 60 ? 1 : 0.4;
-      // Temporarily raise the cap for the chase by driving at full throttle;
-      // driveCar's own cap still applies, cops just hold top speed longer.
       driveCar(state, car, throttle, steer, dt);
     } else {
       driveCopRoad(state, car, dt);
     }
     if (car.speed > speed) car.speed = speed;
-    // Ram: one discrete hit per cruiser per second, not a continuous hose —
-    // a cop glued to the player used to melt a car in seconds. The hit
-    // also knocks the cruiser back so it has to re-acquire.
     if (dist < 46 && car.ramCd <= 0) {
-      car.ramCd = 1.2;
+      // how many cruisers glue on at once.
+      const finale = (state.mission.index === 4 || state.mission.index === 5 || state.mission.index === 7) && !state.mission.done;
+      car.ramCd = finale ? 1.8 : 1.2;
       if (player.inCar) {
-        player.inCar.health -= 5;
+        player.inCar.health -= finale ? 3 : 5;
         if (player.inCar.health <= 0) {
           state.events.push({ type: 'car-wrecked' });
           player.inCar.health = 0;
         }
       } else if (player.invulnerable <= 0) {
-        player.health -= 6;
+        // Armor soaks the ram first.
+        let dmg = 6;
+        const armor = player.armor || 0;
+        if (armor > 0) {
+          const soaked = Math.min(armor, dmg);
+          player.armor = armor - soaked;
+          dmg -= soaked;
+        }
+        player.health -= dmg;
       }
       car.speed *= 0.5;
+      state.events.push({ type: 'ram', x: car.x, z: car.z });
     }
   }
 
@@ -223,7 +309,6 @@ export function updatePolice(state, dt) {
     const dist = Math.hypot(dx, dz) || 1;
     ped.angle = Math.atan2(dx, dz);
     if (!player.inCar && dist < 30) {
-      // Close in slowly: the arrest timer is the player's warning.
       wanted.arrestTimer += dt;
       if (wanted.arrestTimer >= WANTED.arrestSeconds) {
         wanted.arrestTimer = 0;
@@ -233,9 +318,6 @@ export function updatePolice(state, dt) {
       wanted.arrestTimer = Math.max(0, wanted.arrestTimer - dt * 2);
     }
     if (dist > 14) {
-      // If a building has the cop pinned (it barely moved for a while),
-      // step sideways around it instead of pushing at the wall forever.
-      // Only when genuinely stuck — a fleeing player outrunning the cop
       // is not a stuck cop.
       ped.sampleT = (ped.sampleT || 0) + dt;
       if (ped.sampleT >= 0.5) {

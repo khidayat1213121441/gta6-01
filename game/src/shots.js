@@ -37,22 +37,35 @@ export function stageShot(name, state) {
   const player = state.player;
 
   if (name === 'start') {
-    // Dusk over downtown; the title screen sits on top of the live city.
+    // Dusk street action, on foot: pistol out, 2 stars, peds + traffic +
+    // a cruiser closing in. No title menu — this is the game, live.
+    // The player faces +x down the road, so the cruiser and traffic sit
+    // ahead of the camera, on the road, not behind it.
     setClock(state, 18, 5);
+    startMission(state, 0);
     player.x = DOWNTOWN;
     player.z = DOWNTOWN;
-    player.angle = Math.PI * 0.6;
-    placeTraffic(state, DOWNTOWN - 120, DOWNTOWN + 300, 0, 1);
-    placeTraffic(state, DOWNTOWN + 140, DOWNTOWN - 260, Math.PI, 2);
-    placeTraffic(state, DOWNTOWN + 320, DOWNTOWN + 80, Math.PI / 2, 5);
-    placePed(state, DOWNTOWN - 60, DOWNTOWN + 120, 0xe8e0d0);
-    placePed(state, DOWNTOWN + 90, DOWNTOWN - 60, 0x3a6fd2);
-    return { screen: 'title' };
+    player.angle = Math.PI / 2;
+    player.cash = 320;
+    player.health = 100;
+    player.weapons = { owned: ['fists', 'pistol'], current: 'pistol' };
+    state.wanted.stars = 2;
+    state.wanted.heat = 28;
+    const cop = spawnPoliceCar(state, DOWNTOWN + 300, DOWNTOWN - 12);
+    cop.angle = -Math.PI / 2;
+    cop.speed = 260;
+    placeTraffic(state, DOWNTOWN + 180, DOWNTOWN + 12, Math.PI / 2, 1);
+    placeTraffic(state, DOWNTOWN + 420, DOWNTOWN - 12, -Math.PI / 2, 2);
+    placeTraffic(state, DOWNTOWN + 560, DOWNTOWN + 12, Math.PI / 2, 5);
+    placePed(state, DOWNTOWN + 40, DOWNTOWN - 56, 0xe8e0d0);
+    placePed(state, DOWNTOWN + 90, DOWNTOWN + 56, 0x3a6fd2);
+    placePed(state, DOWNTOWN + 260, DOWNTOWN - 56, 0xd23b2e);
+    placePed(state, DOWNTOWN + 360, DOWNTOWN + 56, 0x2ed2a2);
+    return { screen: 'play' };
   }
 
   if (name === 'drive') {
-    // Downtown drive in morning light: traffic, pedestrians, mission 1.
-    setClock(state, 10, 30);
+    setClock(state, 17, 45);
     startMission(state, 0);
     state.mission.phase = 'drive';
     const car = makeCar(state, DOWNTOWN, DOWNTOWN + 40, 0, 'player', 0);
@@ -74,15 +87,14 @@ export function stageShot(name, state) {
   }
 
   if (name === 'mission') {
-    // On foot at the marina: mission 3, one package in reach, 1 star.
-    setClock(state, 15, 0);
+    setClock(state, 18, 0);
     startMission(state, 2);
     state.mission.count = 1;
     const marina = state.city.landmarks.marina;
     const pkg = state.city.packages.find((p) => !p.taken);
     player.x = marina.x - 40;
     player.z = marina.z + 60;
-    player.angle = Math.PI * 0.25;
+    player.angle = Math.PI * 0.75; // face the stashed package
     player.cash = 870;
     player.health = 100;
     state.wanted.stars = 1;
@@ -101,9 +113,7 @@ export function stageShot(name, state) {
     return { screen: 'play' };
   }
 
-  // Default: 'cover' — the police chase. Wanted 3, two cop cars closing in,
-  // mission 5 mid-escape, HUD full: stars, minimap, objective, cash, speed.
-  setClock(state, 16, 30);
+  setClock(state, 17, 50);
   startMission(state, 4);
   state.mission.phase = 'escape';
   state.mission.target = {
@@ -119,8 +129,24 @@ export function stageShot(name, state) {
   player.angle = car.angle;
   player.cash = 2450;
   player.health = 82;
-  state.wanted.stars = 3;
-  state.wanted.heat = 52;
+  state.wanted.stars = 4;
+  state.wanted.heat = 70;
+  // Air unit, staged over the road ahead so the heli and its spotlight
+  // read in frame (its circle passes over the road in real play).
+  state.heli = {
+    active: true, x: DOWNTOWN, z: DOWNTOWN + 480,
+    angle: Math.PI, height: 230, phase: 0,
+  };
+  // Roadblock across the road ahead.
+  const rbCars = [];
+  for (const off of [-22, 22]) {
+    const rb = spawnPoliceCar(state, DOWNTOWN + off, DOWNTOWN + 560);
+    rb.angle = Math.PI / 2;
+    rb.speed = 0;
+    rb.roadblock = true;
+    rbCars.push(rb);
+  }
+  state.roadblocks = [{ x: DOWNTOWN, z: DOWNTOWN + 560, cars: rbCars }];
   const cop1 = spawnPoliceCar(state, DOWNTOWN - 12, DOWNTOWN + 300);
   cop1.angle = Math.PI;
   cop1.speed = 300;

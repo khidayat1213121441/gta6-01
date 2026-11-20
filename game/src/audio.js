@@ -1,7 +1,16 @@
 // Procedural WebAudio sound: no audio files, everything synthesised.
 // Engine hum (pitch follows speed), two-tone police siren, gunshot noise
-// burst, punch thud, pickup chime, mission-complete arpeggio. All guarded:
-// if the AudioContext cannot start, every call is a silent no-op.
+// burst, punch thud, pickup chime, mission-complete arpeggio, and two
+// generative radio stations (no audio files). All guarded: if the
+// AudioContext cannot start, every call is a silent no-op.
+
+// Two stations: chord roots in Hz, a bass note per bar and a pluck melody.
+// The HUD reads radioLine() for the station + current track.
+const STATIONS = [
+  { freq: '98.4', name: 'Neon Coast', bpm: 92, roots: [220, 174.6, 196, 146.8], tracks: ['Midnight Cruise', 'Palm Static', 'Chrome Sunset'] },
+  { freq: '101.2', name: 'Barrio Beats', bpm: 116, roots: [196, 164.8, 220, 185], tracks: ['Calle Fuego', 'Marina Nights', 'Bassline Barrio'] },
+];
+const MELODY = [0, 3, 7, 10, 7, 3, 12, 10];
 
 export function createAudio() {
   let context = null;
@@ -12,6 +21,10 @@ export function createAudio() {
   let sirenGain = null;
   let sirenTimer = 0;
   let sirenHigh = false;
+  let radioStation = 0;
+  let radioStep = 0;
+  let radioNextTime = 0;
+  let radioTrack = 0;
 
   function ensure() {
     if (context) return true;
@@ -56,6 +69,57 @@ export function createAudio() {
 
   return {
     unlock,
+    /** Current station line for the HUD. Works with no audio context. */
+    radioLine() {
+      const st = STATIONS[radioStation];
+      return `RADIO SOLMAR ${st.freq} — ${st.name} · “${st.tracks[radioTrack]}”`;
+    },
+    radioStation() { return radioStation; },
+    nextStation() {
+      radioStation = (radioStation + 1) % STATIONS.length;
+      radioTrack = (radioTrack + 1) % STATIONS[radioStation].tracks.length;
+      radioStep = 0;
+      radioNextTime = 0;
+      return STATIONS[radioStation].name;
+    },
+    /** Generative radio: schedule the next notes while the game runs. */
+    radioTick() {
+      if (!context || context.state !== 'running') return;
+      const st = STATIONS[radioStation];
+      const stepDur = 60 / st.bpm / 2; // eighth notes
+      if (radioNextTime < context.currentTime) radioNextTime = context.currentTime + 0.05;
+      while (radioNextTime < context.currentTime + 0.25) {
+        const bar = Math.floor(radioStep / 8) % st.roots.length;
+        const root = st.roots[bar];
+        const t = radioNextTime;
+        // Bass on the beat.
+        if (radioStep % 2 === 0) {
+          const o = context.createOscillator();
+          const g = context.createGain();
+          o.type = 'triangle';
+          o.frequency.setValueAtTime(root / 2, t);
+          g.gain.setValueAtTime(0.16, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + stepDur * 1.8);
+          o.connect(g); g.connect(master);
+          o.start(t); o.stop(t + stepDur * 2);
+        }
+        if (radioStep % 2 === 1) {
+          const semis = MELODY[radioStep % MELODY.length];
+          const f = root * Math.pow(2, semis / 12);
+          const o = context.createOscillator();
+          const g = context.createGain();
+          o.type = radioStation === 0 ? 'sine' : 'square';
+          o.frequency.setValueAtTime(f, t);
+          g.gain.setValueAtTime(0.07, t);
+          g.gain.exponentialRampToValueAtTime(0.001, t + stepDur * 1.5);
+          o.connect(g); g.connect(master);
+          o.start(t); o.stop(t + stepDur * 1.6);
+        }
+        radioStep += 1;
+        if (radioStep % 64 === 0) radioTrack = (radioTrack + 1) % st.tracks.length;
+        radioNextTime += stepDur;
+      }
+    },
     /** Engine hum follows speed 0..1; call every frame, pass 0 when on foot. */
     engine(speed01, on) {
       if (!ensure()) return;

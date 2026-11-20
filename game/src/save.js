@@ -22,6 +22,9 @@ export function saveGame(state) {
       missionIndex: state.mission.index,
       packages: state.city.packages.map((p) => p.taken),
       health: state.player.health,
+      armor: state.player.armor || 0,
+      respect: state.player.respect || 0,
+      weapons: state.player.weapons || { owned: ['fists', 'pistol'], current: 'pistol' },
       savedAt: Date.now(),
     };
     window.localStorage.setItem(SAVE_KEY, JSON.stringify(data));
@@ -34,6 +37,9 @@ export function saveGame(state) {
 export function applySave(state, data) {
   state.player.cash = data.cash || 0;
   if (typeof data.health === 'number') state.player.health = data.health;
+  state.player.armor = typeof data.armor === 'number' ? data.armor : 0;
+  state.player.respect = typeof data.respect === 'number' ? data.respect : 0;
+  if (data.weapons && Array.isArray(data.weapons.owned)) state.player.weapons = data.weapons;
   if (Array.isArray(data.packages)) {
     data.packages.forEach((taken, i) => {
       if (state.city.packages[i]) state.city.packages[i].taken = !!taken;

@@ -9,6 +9,14 @@ export const ACTION_ENTER = 4;
 export const ACTION_PUNCH = 8;
 export const ACTION_SHOOT = 16;
 export const ACTION_RUN = 32;
+export const ACTION_SHOP_1 = 64;
+export const ACTION_SHOP_2 = 128;
+export const ACTION_SHOP_3 = 256;
+export const ACTION_SHOP_4 = 512;
+export const ACTION_SHOP_5 = 1024;
+export const ACTION_SHOP_6 = 2048;
+export const ACTION_RADIO = 4096;
+export const ACTION_WEAPON = 8192;
 
 const KEY_ACTIONS = {
   Space: ACTION_CONFIRM,
@@ -19,6 +27,14 @@ const KEY_ACTIONS = {
   KeyF: ACTION_PUNCH,
   ShiftLeft: ACTION_RUN,
   ShiftRight: ACTION_RUN,
+  Digit1: ACTION_SHOP_1,
+  Digit2: ACTION_SHOP_2,
+  Digit3: ACTION_SHOP_3,
+  Digit4: ACTION_SHOP_4,
+  Digit5: ACTION_SHOP_5,
+  Digit6: ACTION_SHOP_6,
+  KeyR: ACTION_RADIO,
+  KeyQ: ACTION_WEAPON,
 };
 
 export function createInput(canvas) {

@@ -59,7 +59,15 @@ export const CLOCK = {
   secondsPerRealSecond: 24, // a full day in one hour of play
 };
 
-export const MISSION_REWARDS = [300, 450, 600, 800, 1200, 2000];
+export const MISSION_REWARDS = [300, 450, 600, 800, 1200, 2000, 2500, 3000];
+export const RACE_REWARD = 500;
+export const RESPECT_RANKS = [
+  { at: 0, name: 'STREET RAT' },
+  { at: 100, name: 'HUSTLER' },
+  { at: 250, name: 'WHEELMAN' },
+  { at: 500, name: 'SHOT CALLER' },
+  { at: 900, name: 'KING OF SOLMAR' },
+];
 export const PACKAGE_REWARD = 250;
 export const TAXI_FARE_MIN = 120;
 export const TAXI_FARE_MAX = 320;
@@ -92,8 +100,6 @@ export const PALETTE = {
 export const FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif';
 export const FONT_DISPLAY = '"Trebuchet MS", system-ui, sans-serif';
 
-// Motion identity (motion-design skill): Energetic for game feedback,
-// Premium for menus. One signature easing for 80% of motion.
 export const MOTION = {
   signatureEase: 'expo.out',
   popEase: 'back.out(1.7)',

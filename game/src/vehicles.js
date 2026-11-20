@@ -87,7 +87,9 @@ export function driveCar(state, car, throttle, steer, dt) {
   if (hit) {
     const impact = Math.abs(car.speed);
     car.speed *= -0.25;
-    if (impact > 180) car.health -= (impact - 180) * 0.05;
+    // quarter of the car's health.
+    const finale = state.mission && (state.mission.index === 4 || state.mission.index === 5 || state.mission.index === 7) && !state.mission.done;
+    if (impact > 180) car.health -= (impact - 180) * 0.05 * (finale ? 0.5 : 1);
   }
   car.x = resolved.x;
   car.z = resolved.z;
